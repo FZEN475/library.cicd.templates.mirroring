@@ -1,0 +1,194 @@
+# templates/oci-repository/template.yml
+spec:
+  inputs:
+    mirroring-oci-repository:
+      description: "Enable oci repository"
+      type: boolean
+      default: true
+    job-prefix:
+      description: "Job prefix"
+      type: string
+      default: "-$CI_PROJECT_ID-$CI_COMMIT_SHORT_SHA"
+    skopeo-image:
+      description: "cosign version to download"
+      type: string
+      default: "quay.io/containers/skopeo:latest"
+    stage:
+      description: "Job stage"
+      type: string
+      default: "publish"
+    src-auth-file:
+      description: "Source auth file in docker format"
+      type: string
+      default: "~/.docker/config.json"
+    dest-auth-file:
+      description: "Destination auth file in docker format"
+      type: string
+      default: "~/.docker/config.json"
+    skopeo-args:
+      description: "Extra args for skopeo"
+      type: string
+      default: ""
+    src-oci-image:
+      description: "Source image (support env)"
+      type: string
+    dest-oci-image:
+      description: "Destination image (support env)"
+      type: string
+---
+
+include:
+  - local: templates/mirroring-core/template.yml
+
+variables:
+  SKOPEO_IMAGE: $[[ inputs.skopeo-image ]]
+  SRC_OCI_IMAGE: $[[ inputs.src-oci-image ]]
+  DEST_OCI_IMAGE: $[[ inputs.dest-oci-image ]]
+  SRC_AUTH_FILE: $[[ inputs.src-auth-file ]]
+  DEST_AUTH_FILE: $[[ inputs.dest-auth-file ]]
+  SKOPEO_OCI_ARGS: $[[ inputs.skopeo-args ]]
+
+.mirroring:oci-repository:public:env-overwrite:
+  - |
+    true
+
+.mirroring:oci-repository:public:needs:
+  -
+
+.mirroring:oci-repository:public:extends:
+  tags: []
+
+.mirroring:oci-repository:public:rules-extends:
+  - !reference [ .utils:toolkit:shared:tagged, only ]
+  - when: on_success
+
+.mirroring:oci-repository:internal:scripts: |
+  
+  function get_tags() {
+    local authfile="${1:-}"
+    local oci_image="${2:-}"
+  
+    if [[ -z "$authfile" ]]; then
+      echo "ERROR: authfile не передан" >&2
+      return 1
+    fi
+  
+    if [[ -z "$oci_image" ]]; then
+      echo "ERROR: oci_image не передан" >&2
+      return 1
+    fi
+  
+    local output
+    local rc=0
+  
+    output=$(skopeo list-tags \
+      --authfile "$authfile" \
+      ${SKOPEO_OCI_ARGS} \
+      "docker://$oci_image" \
+      2>&1) || rc=$?
+
+    # repo не существует → считаем как пустой список
+    if [[ $rc -ne 0 ]]; then
+      if echo "$output" | grep -qi "repository name not known to registry"; then
+        echo "[]"
+        return 0
+      fi
+    
+      # любые другие ошибки — не скрываем
+      echo "$output" >&2
+      return $rc
+    fi
+  
+    # нормализация в JSON массив
+    echo "$output" | jq -c '{Tags: (.Tags // [])} | .Tags' 2>/dev/null || echo "[]"
+  }
+  
+  delete_tags() {
+    local tags_json="$1"
+  
+    jq -r '.[]' <<< "$tags_json" | while IFS= read -r tag; do
+      [[ -z "$tag" ]] && continue
+    
+      echo "Delete $tag"
+    
+      if ! skopeo delete ${TRACE+--debug} \
+        --authfile "$DEST_AUTH_FILE" \
+        ${SKOPEO_OCI_ARGS} \
+        "docker://$DEST_OCI_IMAGE:$tag" \
+          | tee -a reports/skopeo-delete.log
+      then
+        echo "Skip failed delete tag: $tag" | tee -a reports/skopeo-delete.log
+      fi
+    done
+  }
+  
+  copy_tags() {
+    local tags_json="$1"
+  
+    jq -r '.[]' <<< "$tags_json" | while IFS= read -r tag; do
+      [[ -z "$tag" ]] && continue
+  
+      echo "Copy $tag"
+  
+      if ! skopeo copy ${TRACE+--debug} \
+        --src-authfile "$SRC_AUTH_FILE" \
+        --dest-authfile "$DEST_AUTH_FILE" \
+        ${SKOPEO_OCI_ARGS} \
+        "docker://$SRC_OCI_IMAGE:$tag" \
+        "docker://$DEST_OCI_IMAGE:$tag" \
+        | tee -a reports/skopeo-copy.log
+      then
+        echo "Skip failed tag: $tag" | tee -a reports/skopeo-copy.log
+      fi
+    done
+  }
+
+mirroring:oci-repository:core:
+  extends:
+    - .utils:toolkit:shared:package-cache
+    - .mirroring:oci-repository:public:extends
+  image:
+    name: "$SKOPEO_IMAGE"
+    entrypoint: [""]
+  stage: $[[ inputs.stage ]]
+  needs:
+    - !reference [ .mirroring:oci-repository:public:needs ]
+  before_script:
+    - !reference [ .utils:toolkit:shared:install-utility ]
+    - !reference [ .mirroring:oci-repository:internal:scripts ]
+    - !reference [ .mirroring:oci-repository:public:env-overwrite ]
+  script:
+    - mkdir -p reports
+    - src_tags="$(get_tags "$SRC_AUTH_FILE" "$SRC_OCI_IMAGE")"
+    - dest_tags="$(get_tags "$DEST_AUTH_FILE" "$DEST_OCI_IMAGE")"
+    - log_info "Source tags ${src_tags}"
+    - log_info "Destination tags ${dest_tags}"
+    - |
+      on_delete_tags=$(
+        jq -c -n \
+          --argjson src "$src_tags" \
+          --argjson dest "$dest_tags" \
+          '$dest - $src'
+      )
+    - |
+      on_copy_tags=$(
+        jq -c -n \
+          --argjson src "$src_tags" \
+          --argjson dest "$dest_tags" \
+          '$src - $dest'
+      )
+    - log_info "Delete ${DEST_OCI_IMAGE} tags ${on_delete_tags}"
+    - delete_tags "$on_delete_tags"
+    - log_info "Copying ${SRC_OCI_IMAGE} to ${DEST_OCI_IMAGE} tags ${on_copy_tags}"
+    - copy_tags "$on_copy_tags"
+  artifacts:
+    name: "skopeo copy log for $CI_PROJECT_NAME on $CI_COMMIT_REF_SLUG"
+    expire_in: 1 week
+    when: always
+    paths:
+      - "reports/skopeo-delete.log"
+      - "reports/skopeo-copy.log"
+  rules:
+    - if: '"$[[ inputs.mirroring-oci-repository ]]" != "true"'
+      when: never
+    - !reference [ .mirroring:oci-repository:public:rules-extends ]

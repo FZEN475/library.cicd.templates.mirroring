@@ -1,0 +1,25 @@
+
+include:
+  - local: '.gitlab-ci.oci-repository.yml'
+  - component: $CI_SERVER_FQDN/library/cicd/auto-gitlab/auto-release@main
+
+variables:
+  CI_DEBUG_TRACE: "false"
+  EXAMPLE_ENV_SRC: "gitlab-registry.fizn.ru/library/docker-images/local-tests/helm-install"
+  EXAMPLE_ENV_DEST: "gitlab-registry.fizn.ru/library/cicd/templates/mirroring/oci-repository"
+
+stages:
+  - test
+  - auto-gitlab
+
+.auto-gitlab:auto-release:public:RELEASE-md:
+  - |-
+    cat > RELEASE.md <<EOF
+    # Release ${CI_COMMIT_TAG}
+
+    ## Features
+    
+    ### oci-repository
+      Копирование между oci репозиториями с поддержкой идемпотентности.
+    ---
+    EOF

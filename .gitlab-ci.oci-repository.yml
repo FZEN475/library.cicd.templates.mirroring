@@ -1,0 +1,16 @@
+include:
+  - local: 'templates/oci-repository/template.yml'
+    inputs:
+      stage: "test"
+      src-auth-file: "/tmp/config.json"
+      dest-auth-file: "/tmp/config.json"
+      src-oci-image: "$EXAMPLE_ENV_SRC"
+      dest-oci-image: "$EXAMPLE_ENV_DEST"
+
+.mirroring:oci-repository:public:extends:
+  tags:
+    - docker-builder
+
+.mirroring:oci-repository:public:rules-extends:
+  - !reference [ .utils:toolkit:shared:tagged, not ]
+  - when: on_success
