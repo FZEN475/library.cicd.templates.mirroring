@@ -1,0 +1,42 @@
+
+include:
+  - local: '.gitlab-ci.oci-repository.yml'
+  - component: $CI_SERVER_FQDN/library/cicd/auto-gitlab/auto-release@main
+
+
+# ⚠️ БЕЗОПАСНОСТЬ: Не пишите пароли в этот файл! Пользуйтесь Settings -> CI/CD -> Variables.
+# Обязательно включайте флаг "Mask variable" для паролей.
+#
+# Имена переменных зависят от направления:
+# ИСТОЧНИК (SRC):      SRC_REGISTRY_USER и SRC_REGISTRY_PASSWORD (для Docker Hub не нужны).
+# НАЗНАЧЕНИЕ (DEST):   DEST_REGISTRY_USER и DEST_REGISTRY_PASSWORD.
+# ℹ️ ВАЖНО: Если переменные DEST_ не заданы, система по умолчанию подставит учетку
+#          текущего GitLab CI ($CI_JOB_TOKEN) — это идеально для пуша в свой же проект.
+
+variables:
+  CI_DEBUG_TRACE: "true"
+  EXAMPLE_SRC_OCI_IMAGE: "docker.io/library/hello-world"
+  EXAMPLE_DEST_OCI_IMAGE: "registry.gitlab.fizn.ru/library/cicd/templates/mirroring/oci-repository"
+
+  EXAMPLE_SRC_GIT_REPO: "https://gitlab.com/to-be-continuous/ansible.git"
+  EXAMPLE_DEST_GIT_REPO: "${CI_SERVER_URL}/library/to-be-continuous/ansible.git"
+
+stages:
+  - test
+  - auto-gitlab
+
+.auto-gitlab:auto-release:public:RELEASE-md:
+  - |-
+    cat > RELEASE.md <<EOF
+    # Release ${CI_COMMIT_TAG}
+
+    ## Features
+    
+    ### oci-repository
+      Копирование между oci репозиториями с поддержкой идемпотентности.
+    
+    ### git-repository
+      Копирование между Git-репозиториями с поддержкой синхронизации как отдельных веток, так и полного зеркалирования всех ссылок (branches/tags).
+    
+    ---
+    EOF

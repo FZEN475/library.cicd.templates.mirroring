@@ -1,0 +1,126 @@
+# templates/git-repository/template.yml
+spec:
+  inputs:
+    mirroring-git-repository:
+      description: "Enable GIT repository mirroring"
+      type: boolean
+      default: true
+    job-prefix:
+      description: "Job prefix"
+      type: string
+      default: "-$CI_PROJECT_ID-$CI_COMMIT_SHORT_SHA"
+    git-image:
+      description: "cosign version to download"
+      type: string
+      default: "alpine/git:latest"
+    stage:
+      description: "Job stage"
+      type: string
+      default: "publish"
+    git-args:
+      description: "Extra args for git"
+      type: string
+      default: ""
+    src-git-repository:
+      description: "Source repository"
+      type: string
+      default: ""
+    dest-git-repository:
+      description: "Destination repository"
+      type: string
+      default: ""
+    branch:
+      description: "Specific branch to mirror (leaves empty for all branches)"
+      type: string
+      default: ""
+
+---
+
+include:
+  - local: templates/mirroring-core/template.yml
+
+variables:
+  GIT_IMAGE: $[[ inputs.git-image ]]
+  GIT_ARGS: $[[ inputs.git-args ]]
+  SRC_INPUT_REPOSITORY: "$[[ inputs.src-git-repository ]]"
+  DEST_INPUT_REPOSITORY: "$[[ inputs.dest-git-repository ]]"
+  SRC_INPUT_BRANCH: "$[[ inputs.branch ]]"
+
+.mirroring:git-repository:public:env-overwrite:
+  - |
+    if [ -z "$SRC_GIT_REPOSITORY" ]; then export SRC_GIT_REPOSITORY="$SRC_INPUT_REPOSITORY"; fi
+    if [ -z "$DEST_GIT_REPOSITORY" ]; then export DEST_GIT_REPOSITORY="$DEST_INPUT_REPOSITORY"; fi
+    if [ -z "$GIT_BRANCH" ]; then export GIT_BRANCH="$SRC_INPUT_BRANCH"; fi
+
+.mirroring:git-repository:public:needs:
+  -
+
+.mirroring:git-repository:public:extends:
+  tags: []
+
+.mirroring:git-repository:public:rules-extends:
+  - !reference [ .utils:toolkit:shared:tagged, only ]
+  - when: on_success
+
+.mirroring:git-repository:internal:scripts:
+  - mkdir -p reports
+  # Настройка базового конфига Git без хардкода почты
+  - git config --global user.email "${GITLAB_USER_EMAIL:-ci-bot@telecom.internal}"
+  - git config --global user.name "${GITLAB_USER_NAME:-CI Mirror Bot}"
+
+mirroring:git-repository:core:
+  extends:
+    - .utils:toolkit:shared:package-cache
+    - .mirroring:git-repository:public:extends
+  image:
+    name: "$GIT_IMAGE"
+    entrypoint: [""]
+  stage: $[[ inputs.stage ]]
+  needs:
+    - !reference [ .mirroring:git-repository:public:needs ]
+  before_script:
+    - !reference [ .utils:toolkit:shared:install-utility ]
+    - !reference [ .mirroring:git-repository:internal:scripts ]
+    - !reference [ .mirroring:git-repository:public:env-overwrite ]
+    - !reference [ .mirroring:mirroring-core:shared:tbc_common ]
+    - !reference [ .mirroring:mirroring-core:shared:netrc ]
+  script:
+    - |
+      if [ -z "$SRC_GIT_REPOSITORY" ] || [ -z "$DEST_GIT_REPOSITORY" ]; then
+        log_error "SRC_GIT_REPOSITORY and DEST_GIT_REPOSITORY must not be empty!"
+        exit 1
+      fi
+    - |
+      if [ -z "$GIT_BRANCH" ]; then
+        log_info "Full Mirroring (--mirror) for all branches and tags"
+        git clone --mirror "${SRC_GIT_REPOSITORY}" mirror.git
+        cd mirror.git
+        git remote set-url origin "${DEST_GIT_REPOSITORY}"
+      
+        log_info "Pushing all refs to destination..."
+        git push --mirror -o ci.skip ${GIT_ARGS:-} origin 2>&1 | tee "$CI_PROJECT_DIR/reports/git-copy.log"
+      else
+        log_info "Single Branch Mirroring for: $GIT_BRANCH"
+        git init --bare mirror.git
+        cd mirror.git
+        git remote add source "${SRC_GIT_REPOSITORY}"
+        git remote add origin "${DEST_GIT_REPOSITORY}"
+      
+        echo "Fetching single branch with full history and tags..."
+        git fetch --tags source "$GIT_BRANCH"
+      
+        echo "Pushing branch and tags to destination..."
+        git push --force -o ci.skip ${GIT_ARGS:-} origin FETCH_HEAD:refs/heads/"$GIT_BRANCH" 2>&1 | tee "$CI_PROJECT_DIR/reports/git-copy.log"
+        git push --tags --force -o ci.skip ${GIT_ARGS:-} origin 2>&1 | tee -a "$CI_PROJECT_DIR/reports/git-copy.log"
+      fi
+
+  artifacts:
+    name: "GIT copy log for $CI_PROJECT_NAME on $CI_COMMIT_REF_SLUG"
+    expire_in: 1 week
+    when: always
+    paths:
+      - "reports/git-copy.log"
+  rules:
+    - if: '"$[[ inputs.mirroring-git-repository ]]" != "true"'
+      when: never
+    - !reference [ .mirroring:git-repository:public:rules-extends ]
