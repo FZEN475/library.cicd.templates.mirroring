@@ -1,93 +1,172 @@
-# docker-image-mirroring
+# mirroring-template
+
+Набор GitLab CI/CD шаблонов для зеркалирования артефактов между разными источниками.
+
+---
+
+## oci-repository
+
+Копирование между oci репозиториями с поддержкой идемпотентности.
+
+### 🔐 Авторизация в Registry (Инструкция для разработчиков)
+
+> ⚠️ **Критически важно:** Ни при каких обстоятельствах не пишите логины и пароли текстом в файлы `.yml`!
+
+Все доступы к приватным реестрам передаются через **Settings -> CI/CD -> Variables** в интерфейсе GitLab (с обязательным флагом **Mask variable**) либо внутри блока `parallel:matrix` в вашем проекте.
+
+### Имена переменных для авторизации:
+
+1. **Для источника (Откуда качаем образ):**
+  * `SRC_REGISTRY_USER` — логин.
+  * `SRC_REGISTRY_PASSWORD` — пароль или токен.
+  * _Если образ публичный (например, на Docker Hub), эти переменные создавать **не нужно**._
+
+2. **Для назначения (Куда пушим образ):**
+  * `DEST_REGISTRY_USER` — логин.
+  * `DEST_REGISTRY_PASSWORD` — пароль или токен.
+  * ℹ️ **Поведение по умолчанию:** Если вы оставите эти переменные **пустыми**, шаблон автоматически подставит системный токен текущего пайплайна (`$CI_JOB_TOKEN`). Это значит, что для загрузки образов во встроенный Container Registry вашего же проекта ничего настраивать не нужно — всё заведется само.
 
 
+### Usage
 
-## Getting started
+```yaml
+include:
+  - component: $CI_SERVER_FQDN/library/cicd/templates/mirroring/oci-repository@main
+    inputs:
+      stage: "test"
+      src-oci-image: "$EXAMPLE_ENV_SRC"
+      dest-oci-image: "$EXAMPLE_ENV_DEST"
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+variables:
+  EXAMPLE_ENV_SRC: "docker.io/library/hello-world"
+  EXAMPLE_ENV_DEST: "registry.gitlab.fizn.ru/library/cicd/templates/mirroring/oci-repository"
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+stages:
+  - test
 
-## Add your files
-
-* [Create](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#create-a-file) or [upload](https://docs.gitlab.com/ee/user/project/repository/web_editor.html#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
 
 ```
-cd existing_repo
-git remote add origin https://gitlab.fizn.ru/library/cicd/examples/docker-image-mirroring.git
-git branch -M main
-git push -uf origin main
+
+### inputs
+
+| Параметр                   | Описание                                      | Тип     | По умолчанию                           | Обязательный |
+|----------------------------|-----------------------------------------------|---------|----------------------------------------|--------------|
+| `mirroring-oci-repository` | Enable OCI repository mirroring               | boolean | true                                   | Нет          |
+| `job-prefix`               | Job prefix                                    | string  | `-$CI_PROJECT_ID-$CI_COMMIT_SHORT_SHA` | Нет          |
+| `skopeo-image`             | Skopeo CLI docker image                       | string  | quay.io/containers/skopeo:latest       | Нет          |
+| `stage`                    | Job stage                                     | string  | publish                                | Нет          |
+| `skopeo-args`              | Extra args for skopeo                         | string  | ""                                     | Нет          |
+| `src-oci-image`            | Source image (supports variables/matrix)      | string  | ""                                     | Нет          |
+| `dest-oci-image`           | Destination image (supports variables/matrix) | string  | ""                                     | Нет          |
+
+### Environment Variables
+
+| Переменная окружения | Значение                       | Описание / Поведение в рантайме                                                                                      |
+|----------------------|--------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| `SKOPEO_IMAGE`       | `$[[ inputs.skopeo-image ]]`   | Докер-образ для запуска утилиты Skopeo.                                                                              |
+| `SKOPEO_OCI_ARGS`    | `$[[ inputs.skopeo-args ]]`    | Дополнительные аргументы командной строки для команд Skopeo.                                                         |
+| `SRC_RELEASE_IMAGE`  | `$[[ inputs.src-oci-image ]]`  | Умный фолбэк: берет значение из matrix или внешних переменных. Если они пусты, использует src-oci-image из инпутов.  |
+| `DEST_RELEASE_IMAGE` | `$[[ inputs.dest-oci-image ]]` | Умный фолбэк: берет значение из matrix или внешних переменных. Если они пусты, использует dest-oci-image из инпутов. |
+
+### Template Extension Points
+
+| Расширение / Блок                                  | Назначение                                      |
+|----------------------------------------------------|-------------------------------------------------|
+| `.mirroring:oci-repository:public:env-overwrite`   | Переопределение переменных окружения.           |
+| `.mirroring:oci-repository:public:rules-extends`   | Переопределение правил запуска.                 |
+| `.mirroring:oci-repository:public:extends`         | Переопределение блоков mirroring job.           |
+| `.mirroring:oci-repository:public:needs`           | Определяет зависимости mirroring от других job. |
+| `.mirroring:mirroring-core:shared:tbc_common`      | Общие скрипты **TBC**                           |
+| `.mirroring:mirroring-core:shared:registries_auth` | Генерация `~/.docker/config.json`               |
+
+---
+
+## git-repository
+Копирование между Git-репозиториями с поддержкой синхронизации как отдельных веток, так и полного зеркалирования всех ссылок (branches/tags).
+### 🔐 Авторизация в Git-репозиториях через .netrc
+
+⚠️ Критически важно: Ни при каких обстоятельствах не пишите логины, пароли или токены текстом в файлы `.yml`! Не передавайте секреты открытым текстом внутри URL-адресов репозиториев.
+
+Авторизация в приватных Git-репозиториях полностью автоматизирована и изолирована с помощью механизма `~/.netrc` и встроенного шаблонизатора переменных `tbc_envsubst`.
+Шаблон поддерживает два сценария авторизации:
+#### Сценарий 1: Автоматический (Встроенный GitLab) — По умолчанию
+Если в корне вашего проекта отсутствует файл `.netrc`, шаблон автоматически сконфигурирует авторизацию для хоста текущего GitLab-сервера (`$CI_SERVER_HOST`).
+
+* В качестве логина используется: `gitlab-ci-token`
+* В качестве пароля используется: системный `$CI_JOB_TOKEN` текущего пайплайна.
+* Что это значит: Для скачивания или пуша в репозитории внутри вашего же инстанса GitLab ничего настраивать не нужно — всё заработает «из коробки».
+
+#### Сценарий 2: Кастомный (Внешние репозитории: GitHub, Bitbucket и др.)
+Если вам нужно авторизоваться на внешних Git-хостингах или использовать кастомные токены, создайте в корне своего проекта файл .netrc с переменными-плейсхолдерами.
+1. Создайте файл `.netrc` в корне проекта:
+    ```
+    machine github.com
+    login ${GITHUB_USER}
+    password ${GITHUB_TOKEN}
+    
+    machine example.com
+    login oauth2
+    password ${INTERNAL_GITLAB_TOKEN}
+    ```
+
+2. Задайте секреты в интерфейсе GitLab:
+   Перейдите в **Settings** -> **CI/CD** -> **Variables** и добавьте переменные **GITHUB_USER**, **GITHUB_TOKEN** и **INTERNAL_GITLAB_TOKEN** (обязательно включите для них флаг Mask variable).
+3. Как это работает в рантайме:
+   Встроенная функция `tbc_envsubst` перед стартом Git-команд автоматически подставит значения из маскированных переменных GitLab CI в ваш файл `.netrc`, переместит его в безопасную домашнюю директорию (`~/.netrc`) и выставит правильные права доступа 0600.  
+   При этом механизм `tbc_envsubst` автоматически экранирует спецсимволы в паролях и токенах, предотвращая синтаксические ошибки при работе с URL.
+
+------------------------------
+### Usage
+При одиночном запуске параметры передаются стандартным образом через inputs.
+```yaml
+include:
+  - component: $CI_SERVER_FQDN/library/cicd/templates/mirroring/git-repository@main
+    inputs:
+      stage: "test"
+      src-git-repository: "$EXAMPLE_ENV_SRC"
+      dest-git-repository: "$EXAMPLE_ENV_DEST"
+      branch: "master"
+variables:
+  EXAMPLE_ENV_SRC: "https://github.com"
+  EXAMPLE_ENV_DEST: "https://oauth2:$MY_GITLAB_TOKEN@://company.com"
+stages:
+  - test
 ```
 
-## Integrate with your tools
+### inputs
 
-* [Set up project integrations](https://gitlab.fizn.ru/library/cicd/examples/docker-image-mirroring/-/settings/integrations)
+| Параметр                 | Описание                                                             | Тип     | По умолчанию                           | Обязательный |
+|--------------------------|----------------------------------------------------------------------|---------|----------------------------------------|--------------|
+| mirroring-git-repository | Enable GIT repository mirroring                                      | boolean | `true`                                 | Нет          |
+| job-prefix               | Job prefix                                                           | string  | `-$CI_PROJECT_ID-$CI_COMMIT_SHORT_SHA` | Нет          |
+| git-image                | Git CLI docker image                                                 | string  | `alpine/git:latest`                    | Нет          |
+| stage                    | Job stage                                                            | string  | `publish`                              | Нет          |
+| git-args                 | Extra args for git push (e.g. --atomic)                              | string  | ""                                     | Нет          |
+| src-git-repository       | Source repository URL (supports variables/matrix)                    | string  | ""                                     | Нет          |
+| dest-git-repository      | Destination repository URL (supports variables/matrix)               | string  | ""                                     | Нет          |
+| branch                   | Specific branch to mirror. If left empty, mirrors all branches/tags. | string  | ""                                     | Нет          |
 
-## Collaborate with your team
+------------------------------
+### Environment Variables
 
-* [Invite team members and collaborators](https://docs.gitlab.com/ee/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/ee/user/project/merge_requests/creating_merge_requests.html)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/ee/user/project/issues/managing_issues.html#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/ee/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
+| Переменная окружения | Значение                            | Описание / Поведение в рантайме                                                                                             |
+|----------------------|-------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| GIT_IMAGE            | `$[[ inputs.git-image ]]`           | Докер-образ для запуска Git.                                                                                                |
+| GIT_ARGS             | `$[[ inputs.git-args ]]`            | Дополнительные аргументы командной строки для git push.                                                                     |
+| SRC_GIT_REPOSITORY   | `$[[ inputs.src-git-repository ]]`  | Умный фолбэк: приоритетно берет значение из matrix или внешних переменных. Если они пусты, берет инпут src-git-repository.  |
+| DEST_GIT_REPOSITORY  | `$[[ inputs.dest-git-repository ]]` | Умный фолбэк: приоритетно берет значение из matrix или внешних переменных. Если они пусты, берет инпут dest-git-repository. |
+| GIT_BRANCH           | `$[[ inputs.branch ]]`              | Умный фолбэк: приоритетно берет ветку из matrix. Если пустая — зеркалирует весь репозиторий (--mirror).                     |
 
-## Test and Deploy
+------------------------------
+### Template Extension Points
+Вы можете гибко управлять поведением джобы из своего проекта, переопределяя следующие скрытые блоки:
 
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ee/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/ee/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/ee/topics/autodevops/requirements.html)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/ee/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ee/ci/environments/protected_environments.html)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
-
-## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
-
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
-
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
-
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
-
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
-
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
-
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
-
-## License
-For open source projects, say how it is licensed.
-
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+| Расширение / Блок                              | Назначение                                                                                  |
+|------------------------------------------------|---------------------------------------------------------------------------------------------|
+| .mirroring:git-repository:public:env-overwrite | Переопределение рантайм-переменных окружения и логики фолбэков.                             |
+| .mirroring:git-repository:public:rules-extends | Переопределение условий запуска (по умолчанию: on_success при наличии Git-тегов).           |
+| .mirroring:git-repository:public:extends       | Главная точка расширения. Сюда инжектится parallel:matrix, tags или кастомные variables.    |
+| .mirroring:git-repository:public:needs         | Определяет зависимости текущей джобы от других этапов (по умолчанию список пуст).           |
+| .mirroring:git-repository:internal:scripts     | Внутренняя инициализация (создание директорий, настройка дефолтных user.name и user.email). |
+| .mirroring:mirroring-core:shared:tbc_common    | Интеграция общих скриптов и хелперов логирования TBC.                                       |
+| .mirroring:mirroring-core:shared:netrc         | Автоматическая генерация файлов аутентификации .netrc (если применимо).                     |

@@ -1,0 +1,24 @@
+include:
+  - local: 'templates/oci-repository/template.yml'
+    inputs:
+      mirroring-oci-repository: false
+      stage: "test"
+      src-oci-image: "$EXAMPLE_SRC_OCI_IMAGE"
+      dest-oci-image: "$EXAMPLE_DEST_OCI_IMAGE"
+
+  - local: 'templates/git-repository/template.yml'
+    inputs:
+      stage: "test"
+      src-git-repository: "$EXAMPLE_SRC_GIT_REPO"
+      dest-git-repository: "$EXAMPLE_DEST_GIT_REPO"
+      branch: "master"
+
+.mirroring:oci-repository:public:rules-extends:
+  - !reference [ .utils:toolkit:shared:tagged, not ]
+  - when: on_success
+
+.mirroring:git-repository:public:rules-extends:
+  - !reference [ .utils:toolkit:shared:tagged, not ]
+  - when: on_success
+
+
